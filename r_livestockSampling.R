@@ -1,3 +1,4 @@
+rm(list = ls())
 # script to estimate power to compare RVFV seroprevalence between predicted high and low risk areas
 start.time <- Sys.time()
 
@@ -10,9 +11,11 @@ library(parallel)
 nsim <- 1000
 
 # sampling / design choices
-n.village <- 50
-n.hh <- 10         # per village
-n <- 8             # no of animals per household
+n.village <- 32
+n.hh <- 15         # per village
+n <- 3             # no of animals per household
+
+n.village * n.hh * n
 
 # effect size: OR representing difference in seroprevalence 
 # between high and low risk villages
@@ -24,7 +27,9 @@ OR <- 3
 
 if(!file.exists("parameter.estimates.csv")) {
   # load RVFV serology 
-  dat <- read.csv("rvf_livestock_data_2719.csv")[, -1]
+  #  dat <- read.csv("data/rvf_livestock_data_2719.csv")[, -1]
+  dat <- read.csv("data/rvf_human_data_2719.csv")[, -1]
+  
   # remove unknown species
   dat <- dat[dat$species != "dk_spe", ]
   # make unique village ID
@@ -74,7 +79,8 @@ res.tab.fn <- function(...) {
     fit <- glmer(cbind(response, n - response) ~ risk.level + (1 | hh) +(1 | village), family = binomial, data = simdat)
     fit0 <- update(fit, ~ . - risk.level)
     #coef(summary(fit))["risk.level", "Pr(>|z|)"] # Wald P not reliable - gives inflated type 1 error
-    anova(fit, fit0)[2, "Pr(>Chisq)"]
+    c(p = anova(fit, fit0)[2, "Pr(>Chisq)"], 
+      ci = plogis(confint(fit, method = "Wald")["(Intercept)", ]))
   })
 }
 
@@ -84,6 +90,11 @@ sim.res <- mclapply(1:nsim, res.tab.fn, mc.cores = detectCores())
 print(Sys.time() - start.time)
 
 # estimate power
-apply(do.call("rbind", sim.res) < 0.05, 2, mean)
-
+sapply(species, function(sp) {
+  tab <- t(sapply(sim.res, function(x) x[, sp]))
+  power <-mean(tab[, "p"] < 0.05)
+  mean.moe <- 
+    mean(apply(tab[, c("ci.2.5 %", "ci.97.5 %")], 1, diff))/2
+  c(power = power, mean.moe = mean.moe)
+})
 
