@@ -8,7 +8,7 @@ library(lme4)
 library(parallel)
 
 # no of data sets to simulate per species (1000 takes ~ 4 min)
-nsim <- 1000
+nsim <- 10000
 
 # sampling / design choices
 n.village <- 32
@@ -56,7 +56,7 @@ species <- colnames(par.tab)
 
 # function to simulate data and estimate p-value for null hypothesis 
 # that high and low risk areas have the same seroprevalence
-res.tab.fn <- function(...) {
+res.tab.fn <- function(rand.seed = NULL, ...) {
   sapply(species, function(sp) {
     
     # create template data set
@@ -65,6 +65,7 @@ res.tab.fn <- function(...) {
     # allocate villages to high and low prevalence in 1:1 ratio 
     dat$risk.level <- dat$village %% 2 - 0.5
     # simulate seropositives
+    set.seed(rand.seed)
     simdat <-
       sim.glmm(
         design.data = dat, 
@@ -76,25 +77,42 @@ res.tab.fn <- function(...) {
         rand.V = c(hh = par.tab["barcode_hh", sp], 
                    village = par.tab["village", sp]))
     
-    fit <- glmer(cbind(response, n - response) ~ risk.level + (1 | hh) +(1 | village), family = binomial, data = simdat)
+    fit <- glmer(cbind(response, n - response) ~ risk.level + (1 | hh) +(1 | village), 
+                 family = binomial, data = simdat,
+                 control = glmerControl(optimizer = "bobyqa"))
     fit0 <- update(fit, ~ . - risk.level)
+    
+    ICC.est <- sum(unlist(VarCorr(fit))) / (sum(unlist(VarCorr(fit))) + pi^2 / 3)
+    
     #coef(summary(fit))["risk.level", "Pr(>|z|)"] # Wald P not reliable - gives inflated type 1 error
     c(p = anova(fit, fit0)[2, "Pr(>Chisq)"], 
-      ci = plogis(confint(fit, method = "Wald")["(Intercept)", ]))
+      ci = plogis(confint(fit, method = "Wald")["(Intercept)", ]),
+      ICC.est = ICC.est)
   })
 }
 
 
 # repeat simulations many times and calculate p-value
-sim.res <- mclapply(1:nsim, res.tab.fn, mc.cores = detectCores())
+#rand.seed <- round((as.numeric(Sys.time()) - floor(as.numeric(Sys.time())))*10000000)  # 
+rand.seed <- 6569149
+set.seed(rand.seed)
+rand.seed.list <- sample(1e9, nsim)
+
+sim.res <- mclapply(rand.seed.list, function(rand.seed) {
+  res.tab.fn(rand.seed = rand.seed)  
+}, mc.cores = detectCores())
 print(Sys.time() - start.time)
 
 # estimate power
 sapply(species, function(sp) {
+  re.var <- sum(par.tab[c("barcode_hh", "village"), sp])
+  ICC <- re.var/(re.var + pi^2 / 3)
   tab <- t(sapply(sim.res, function(x) x[, sp]))
   power <-mean(tab[, "p"] < 0.05)
   mean.moe <- 
     mean(apply(tab[, c("ci.2.5 %", "ci.97.5 %")], 1, diff))/2
-  c(power = power, mean.moe = mean.moe)
+  mean.icc <-mean(tab[, "ICC.est"])
+  c(nsim = nsim, power = power, mean.moe = mean.moe, 
+    mean.icc = mean.icc, true.icc = ICC)
 })
 
