@@ -29,6 +29,16 @@ if(!file.exists("parameter.estimates.csv")) {
   # load RVFV serology 
   #  dat <- read.csv("data/rvf_livestock_data_2719.csv")[, -1]
   dat <- read.csv("data/rvf_human_data_2719.csv")[, -1]
+  dat$IndividualID <- gsub("-", "", dat$IndividualID)
+
+  # load HH and village IDs
+  hh.vill.id <- read.csv("data/humanhouseholdlink_nocoords.csv")[, -1]
+
+  dat$HHID <- hh.vill.id$HHID[match(dat$IndividualID, hh.vill.id$IndividualID)]
+  dat$village <- hh.vill.id$village[match(dat$IndividualID, hh.vill.id$IndividualID)]
+  
+  setdiff(dat$IndividualID, hh.vill.id$IndividualID)
+  setdiff(hh.vill.id$IndividualID, dat$IndividualID)
   
   # remove unknown species
   dat <- dat[dat$species != "dk_spe", ]
@@ -39,9 +49,11 @@ if(!file.exists("parameter.estimates.csv")) {
   par.tab <-
     sapply(levels(dat$species), function(sp) {
       datsp <- dat[dat$species == sp, ]
-      fit <- glmer(result ~ (1 | barcode_hh) +(1 | village), family = binomial, data = datsp)
+      fit <- glmer(rvfv ~ (1 | HHID) +(1 | village), family = binomial, data = dat,
+                   control = glmerControl(optimizer = "bobyqa"))
       fixef(fit)
-      round(c(mean.hh.n = mean(table(datsp$barcode_hh)), 
+      confint(fit, method = "boot", nsim = 5000)
+      round(c(mean.hh.n = mean(table(dat$HHID)), 
               fixef(fit), unlist(VarCorr(fit))), 2)
     })
   # write results to file
