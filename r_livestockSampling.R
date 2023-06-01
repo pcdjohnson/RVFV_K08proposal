@@ -8,12 +8,12 @@ library(lme4)
 library(parallel)
 
 # no of data sets to simulate per species (1000 takes ~ 4 min)
-nsim <- 10000
+nsim <- 1000
 
 # sampling / design choices
-n.village <- 32
-n.hh <- 15         # per village
-n <- 3             # no of animals per household
+n.village <- c(32, 48)[1]
+n.hh <- c(15, 10)[1]         # per village
+n <- 3                       # no of animals/humans per household
 
 n.village * n.hh * n
 
@@ -21,48 +21,28 @@ n.village * n.hh * n
 # between high and low risk villages
 OR <- 3
 
-# load RVFV serology data to get parameter (intercept and variance) estimates
-# only need to do this once - then just load the estimates from file - so that
-# I don't need to store confidential data locally.
+# Livestock serology data:
+# rvf_livestock_data_2719.csv
+# Human serology data:
+# rvf_human_data_2719.csv and humanhouseholdlink_nocoords.csv
 
-if(!file.exists("parameter.estimates.csv")) {
-  # load RVFV serology 
-  #  dat <- read.csv("data/rvf_livestock_data_2719.csv")[, -1]
-  dat <- read.csv("data/rvf_human_data_2719.csv")[, -1]
-  dat$IndividualID <- gsub("-", "", dat$IndividualID)
+# note that in the human data, because of the low number of positives
+# and the low number of individuals sampled per HH (91/242 HH had only one
+# indivuadal sampled, and 166 HH had 1-2 individuals), there wasn't a lot 
+# of information on the HH random effect, so I didn't fit it (i.e. assumed 
+# it was zero).
 
-  # load HH and village IDs
-  hh.vill.id <- read.csv("data/humanhouseholdlink_nocoords.csv")[, -1]
+# no of positives:
+# cattle 156/3582 (4.4%)
+# goat    45/3303 (1.4%)
+# sheep   67/2584 (2.6%)
+# human   48/574  (8.4%)
 
-  dat$HHID <- hh.vill.id$HHID[match(dat$IndividualID, hh.vill.id$IndividualID)]
-  dat$village <- hh.vill.id$village[match(dat$IndividualID, hh.vill.id$IndividualID)]
-  
-  setdiff(dat$IndividualID, hh.vill.id$IndividualID)
-  setdiff(hh.vill.id$IndividualID, dat$IndividualID)
-  
-  # remove unknown species
-  dat <- dat[dat$species != "dk_spe", ]
-  # make unique village ID
-  dat$village <- paste(dat$ward, dat$village, sep = ".")
-  dat$species <- factor(dat$species)
-  # loop over species, collecting model estimates
-  par.tab <-
-    sapply(levels(dat$species), function(sp) {
-      datsp <- dat[dat$species == sp, ]
-      fit <- glmer(rvfv ~ (1 | HHID) +(1 | village), family = binomial, data = dat,
-                   control = glmerControl(optimizer = "bobyqa"))
-      fixef(fit)
-      confint(fit, method = "boot", nsim = 5000)
-      round(c(mean.hh.n = mean(table(dat$HHID)), 
-              fixef(fit), unlist(VarCorr(fit))), 2)
-    })
-  # write results to file
-  write.csv(par.tab, file = "parameter.estimates.csv")
-}
 
 # load parameter estimates
 par.tab <- read.csv("parameter.estimates.csv", row.names = 1)
 species <- colnames(par.tab)
+
 
 # simulate RVFV serology data in each species
 
@@ -88,10 +68,15 @@ res.tab.fn <- function(rand.seed = NULL, ...) {
         distribution = "binomial",
         rand.V = c(hh = par.tab["barcode_hh", sp], 
                    village = par.tab["village", sp]))
+    form <- 
+      if(par.tab["barcode_hh", sp] == 0) {
+        cbind(response, n - response) ~ risk.level + (1 | village)
+      } else {
+        cbind(response, n - response) ~ risk.level + (1 | hh) + (1 | village)
+      }
     
-    fit <- glmer(cbind(response, n - response) ~ risk.level + (1 | hh) +(1 | village), 
-                 family = binomial, data = simdat,
-                 control = glmerControl(optimizer = "bobyqa"))
+    
+    fit <- glmer(form, family = binomial, data = simdat, control = glmerControl(optimizer = "bobyqa"))
     fit0 <- update(fit, ~ . - risk.level)
     
     ICC.est <- sum(unlist(VarCorr(fit))) / (sum(unlist(VarCorr(fit))) + pi^2 / 3)
@@ -105,9 +90,9 @@ res.tab.fn <- function(rand.seed = NULL, ...) {
 
 
 # repeat simulations many times and calculate p-value
-#rand.seed <- round((as.numeric(Sys.time()) - floor(as.numeric(Sys.time())))*10000000)  # 
-rand.seed <- 6569149
-set.seed(rand.seed)
+init.rand.seed <- round((as.numeric(Sys.time()) - floor(as.numeric(Sys.time())))*10000000)  # 
+#init.rand.seed <- 6569149
+set.seed(init.rand.seed)
 rand.seed.list <- sample(1e9, nsim)
 
 sim.res <- mclapply(rand.seed.list, function(rand.seed) {
@@ -115,16 +100,20 @@ sim.res <- mclapply(rand.seed.list, function(rand.seed) {
 }, mc.cores = detectCores())
 print(Sys.time() - start.time)
 
-# estimate power
-sapply(species, function(sp) {
-  re.var <- sum(par.tab[c("barcode_hh", "village"), sp])
-  ICC <- re.var/(re.var + pi^2 / 3)
-  tab <- t(sapply(sim.res, function(x) x[, sp]))
-  power <-mean(tab[, "p"] < 0.05)
-  mean.moe <- 
-    mean(apply(tab[, c("ci.2.5 %", "ci.97.5 %")], 1, diff))/2
-  mean.icc <-mean(tab[, "ICC.est"])
-  c(nsim = nsim, power = power, mean.moe = mean.moe, 
-    mean.icc = mean.icc, true.icc = ICC)
-})
+stopifnot(all(sapply(sim.res, is.numeric)))
 
+# estimate power
+out.tab <-
+  sapply(species, function(sp) {
+    re.var <- sum(par.tab[c("barcode_hh", "village"), sp])
+    ICC <- re.var/(re.var + pi^2 / 3)
+    tab <- t(sapply(sim.res, function(x) x[, sp]))
+    power <-mean(tab[, "p"] < 0.05)
+    mean.moe <- 
+      mean(apply(tab[, c("ci.2.5 %", "ci.97.5 %")], 1, diff))/2
+    mean.icc <-mean(tab[, "ICC.est"])
+    c(n.village = n.village, n.hh = n.hh, n.per.hh = n, OR = OR,
+      nsim = nsim, power = power, mean.moe = mean.moe, 
+      mean.icc = mean.icc, true.icc = ICC)
+  })
+round(out.tab, 3)

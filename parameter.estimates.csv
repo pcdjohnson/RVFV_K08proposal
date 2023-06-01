@@ -1,5 +1,5 @@
 ,cattle,goat,sheep,human
 mean.hh.n,7.51,8.04,7.56,2.33
 (Intercept),-3.53,-5.08,-5.46,-3.19
-barcode_hh,0.4,0,1.71,0.07
-village,0.62,1.84,1.48,1.8
+barcode_hh,0.4,0,1.71,0
+village,0.62,1.84,1.48,1.80
