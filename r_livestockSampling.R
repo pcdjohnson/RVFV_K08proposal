@@ -57,6 +57,8 @@ res.tab.fn <- function(...) {
     # create template data set
     dat <- expand.grid(hh = 1:n.hh, village = 1:n.village, n = n)
     print(sum(dat$n))
+    # we need this line so that each HH has a different identity
+    dat$hh <- factor(paste(dat$village, dat$hh, sep = "-"))
     # allocate villages to high and low prevalence in 1:1 ratio 
     dat$risk.level <- dat$village %% 2 - 0.5
     # simulate seropositives
